@@ -296,6 +296,27 @@ class YandexMusic:
         tracks = ((result.get("tracks") or {}).get("results")) or []
         return [item for item in (_normalize(t) for t in tracks[:limit]) if item]
 
+    async def wave_tracks(
+        self, station: str, batch_id: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Очередная порция треков «волны» (rotor).
+
+        station: user:onyourwave, genre:rock, mood:calm, artist:<id>, track:<id>.
+        """
+        params: dict[str, Any] = {"settings2": "true"}
+        if batch_id:
+            params["batch-id"] = batch_id
+        data = await self._json(f"/rotor/station/{station}/tracks", **params)
+        result = data.get("result") or {}
+        sequence = result.get("sequence") or []
+        tracks = [
+            item.get("track")
+            for item in sequence
+            if isinstance(item, dict) and item.get("track")
+        ]
+        normalized = [item for item in (_normalize(t) for t in tracks) if item]
+        return normalized, result.get("batchId")
+
     async def direct_url(self, track_id: str) -> str:
         """Свежая прямая ссылка на mp3. Живёт около минуты, поэтому берём перед запуском."""
         data = await self._json(f"/tracks/{track_id}/download-info")

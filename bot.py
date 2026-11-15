@@ -63,6 +63,23 @@ STATIONS: dict[str, tuple[str, str]] = {
     "svoefm": ("Свое FM", "https://h.getradio.me/svoefm/hls.m3u8"),
 }
 
+# «Волны» Яндекс.Музыки (rotor): ключ -> (название, station)
+WAVES: dict[str, tuple[str, str]] = {
+    "my": ("Моя волна", "user:onyourwave"),
+    "rock": ("Рок", "genre:rock"),
+    "pop": ("Поп", "genre:pop"),
+    "rap": ("Рэп", "genre:rap"),
+    "electronic": ("Электроника", "genre:electronic"),
+    "metal": ("Метал", "genre:metal"),
+    "indie": ("Инди", "genre:indie"),
+    "jazz": ("Джаз", "genre:jazz"),
+    "classical": ("Классика", "genre:classical"),
+    "calm": ("Спокойное", "mood:calm"),
+    "happy": ("Весёлое", "mood:happy"),
+    "energetic": ("Энергичное", "mood:energetic"),
+    "romantic": ("Романтичное", "mood:romantic"),
+}
+
 DEFAULT_CONFIG: dict = {
     "token": "",
     "guild_id": 0,            # ID сервера — команды появятся сразу (0 = все серверы)
@@ -103,6 +120,7 @@ WATCHDOG_INTERVAL = 10.0   # как часто проверять, что зву
 STATUS_COLORS = {
     "radio": 0x2ECC71,
     "track": 0x3498DB,
+    "wave": 0x1ABC9C,
     "idle": 0x95A5A6,
 }
 
@@ -342,6 +360,10 @@ class GuildPlayer:
         self._source: WatchedVolume | None = None
         self._paused_live = False
         self.on_change = None  # callback: обновить панель
+        self.wave_station: str | None = None
+        self.wave_name = ""
+        self._wave_batch: str | None = None
+        self._wave_task: asyncio.Task | None = None
         self.volume = max(0.0, min(1.5, float(bot.config.get("volume", 60)) / 100))
 
     def _notify(self) -> None:
@@ -384,6 +406,7 @@ class GuildPlayer:
     # -- управление --------------------------------------------------------
 
     def play_radio(self, track: Track) -> None:
+        self.stop_wave()
         self.radio = track
         self.queue.clear()
         self._failures = 0
@@ -391,6 +414,72 @@ class GuildPlayer:
         self._paused_live = False
         self._restart()
         self._notify()
+
+    def play_wave(self, name: str, station: str) -> None:
+        """Бесконечная волна Яндекс.Музыки: очередь всё время пополняется."""
+        self.radio = None
+        self.queue.clear()
+        self._wave_name = name
+        self.wave_name = name
+        self.wave_station = station
+        self._wave_batch = None
+        self._failures = 0
+        self._stopped = False
+        self._paused_live = False
+        self._start_wave_loop()
+        self._restart()
+        self._notify()
+
+    def stop_wave(self) -> bool:
+        was = self.wave_station is not None
+        self.wave_station = None
+        self.wave_name = ""
+        self._wave_batch = None
+        task = self._wave_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._wave_task = None
+        return was
+
+    def _start_wave_loop(self) -> None:
+        if self._wave_task is None or self._wave_task.done():
+            self._wave_task = asyncio.create_task(self._wave_loop())
+
+    async def _wave_loop(self) -> None:
+        while not self._stopped and self.wave_station:
+            station = self.wave_station
+            if len(self.queue) <= 3:
+                try:
+                    tracks, batch = await self.bot.yandex.wave_tracks(
+                        station, self._wave_batch
+                    )
+                except Exception as exc:
+                    log.warning("Волна: не смог получить треки (%s)", exc)
+                    await asyncio.sleep(10)
+                    continue
+
+                if self.wave_station != station or self._stopped:
+                    return
+
+                self._wave_batch = batch
+                added = 0
+                for item in tracks:
+                    self.queue.append(
+                        Track(
+                            title=item["title"],
+                            url="",
+                            live=False,
+                            requester=self.wave_name or "волна",
+                            yandex_id=item["id"],
+                        )
+                    )
+                    added += 1
+                if added:
+                    log.info("Волна «%s»: +%d треков", self.wave_name, added)
+                    self._notify()
+                    if self._current is None:
+                        self._advance()
+            await asyncio.sleep(4)
 
     def enqueue(self, track: Track) -> None:
         self.queue.append(track)
@@ -495,6 +584,11 @@ class GuildPlayer:
             track = self.queue.popleft()
         elif self.radio:
             track = self.radio
+        elif self.wave_station:
+            # Волна: треки ещё не подгрузились — подождём и попробуем снова.
+            self._current = None
+            self._schedule_advance(1.0, seq)
+            return
         else:
             self._current = None
             if vc.is_playing():
@@ -697,6 +791,7 @@ class GuildPlayer:
         self._stopped = True
         self._seq += 1
         self._paused_live = False
+        self.stop_wave()
         if self._watchdog and not self._watchdog.done():
             self._watchdog.cancel()
         self.radio = None
@@ -770,10 +865,20 @@ def build_panel_embed(player: "GuildPlayer | None") -> discord.Embed:
         )
 
     cur = player.current
+    if player.wave_station:
+        title = f"🌊 Волна · {player.wave_name}"
+        colour = STATUS_COLORS["wave"]
+    elif cur.live:
+        title = "📻 Радио"
+        colour = STATUS_COLORS["radio"]
+    else:
+        title = "🎵 Сейчас играет"
+        colour = STATUS_COLORS["track"]
+
     embed = discord.Embed(
-        title="📻 Радио" if cur.live else "🎵 Сейчас играет",
+        title=title,
         description=f"**{cur.title[:180]}**",
-        colour=STATUS_COLORS["radio"] if cur.live else STATUS_COLORS["track"],
+        colour=colour,
     )
     if player.paused:
         embed.description += "\n⏸ **Пауза**"
@@ -1034,6 +1139,29 @@ class PlayerPanel(discord.ui.View):
     )
     async def queue_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.client.handle_panel_action(interaction, "queue")
+
+    # -- ряд 4: волны Яндекс.Музыки ---------------------------------------
+
+    @discord.ui.select(
+        placeholder="Волна Яндекс.Музыки",
+        custom_id="panel:wave",
+        row=4,
+        options=[
+            discord.SelectOption(label="Моя волна", value="my", emoji="🌊"),
+            discord.SelectOption(label="Рок", value="rock"),
+            discord.SelectOption(label="Поп", value="pop"),
+            discord.SelectOption(label="Рэп", value="rap"),
+            discord.SelectOption(label="Электроника", value="electronic"),
+            discord.SelectOption(label="Джаз", value="jazz"),
+            discord.SelectOption(label="Спокойное", value="calm"),
+            discord.SelectOption(label="Весёлое", value="happy"),
+            discord.SelectOption(label="Выключить волну", value="off", emoji="⏹"),
+        ],
+    )
+    async def wave_select(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        await interaction.client.handle_panel_action(interaction, "wave")
 
 
 class TrackSelect(discord.ui.View):
@@ -1404,6 +1532,10 @@ class RadioBot(discord.Client):
             await self._panel_radio(interaction, value)
             return
 
+        if action == "wave":
+            await self._panel_wave(interaction, value)
+            return
+
         if guild is None or player is None or player.vc is None:
             await self._panel_say(interaction, "Я не в голосовом канале. Включи `/radio`.")
             return
@@ -1453,6 +1585,39 @@ class RadioBot(discord.Client):
             await self._panel_say(interaction, "Неизвестная кнопка")
             return
 
+        await self.refresh_panel(guild, force=True)
+
+    async def _panel_wave(self, interaction: discord.Interaction, value: str) -> None:
+        guild = interaction.guild
+        player = self.get_player(guild)
+
+        if value == "off":
+            player.stop_wave()
+            player.queue.clear()
+            player.skip()
+            await self._panel_say(interaction, "🌊 Волна выключена")
+            await self.refresh_panel(guild, force=True)
+            return
+
+        wave = WAVES.get(value)
+        if wave is None:
+            await self._panel_say(interaction, "Неизвестная волна")
+            return
+
+        voice = getattr(interaction.user, "voice", None)
+        if voice is None or voice.channel is None:
+            await self._panel_say(interaction, "Сначала зайди в голосовой канал.")
+            return
+
+        try:
+            await player.ensure_voice(voice.channel)
+        except Exception as exc:
+            await self._panel_say(interaction, f"Не смог зайти в канал: {exc}")
+            return
+
+        name, station = wave
+        player.play_wave(name, station)
+        await self._panel_say(interaction, f"🌊 Волна: {name}")
         await self.refresh_panel(guild, force=True)
 
     async def _panel_radio(self, interaction: discord.Interaction, value: str) -> None:
@@ -1912,6 +2077,40 @@ def setup_commands(bot: RadioBot) -> None:
             view=TrackSelect(items),
             ephemeral=True,
         )
+
+    # -------------------------------------------------------------------- /wave
+    @tree.command(name="wave", description="Включить волну Яндекс.Музыки")
+    @app_commands.describe(kind="Какая волна (по умолчанию — Моя волна)")
+    @app_commands.choices(
+        kind=[
+            app_commands.Choice(name=name, value=key)
+            for key, (name, _) in WAVES.items()
+        ]
+    )
+    async def wave_cmd(
+        interaction: discord.Interaction,
+        kind: app_commands.Choice[str] | None = None,
+    ) -> None:
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        channel = await _require_voice(interaction)
+        if channel is None:
+            return
+
+        key = kind.value if kind else "my"
+        name, station = WAVES[key]
+
+        player = bot.get_player(interaction.guild)
+        try:
+            await player.ensure_voice(channel)
+        except Exception as exc:
+            await interaction.followup.send(
+                f"Не смог зайти в канал: {exc}", ephemeral=True
+            )
+            return
+
+        player.play_wave(name, station)
+        await interaction.followup.send(f"🌊 Волна: **{name}**", ephemeral=True)
+        await bot.ensure_panel(interaction.guild, interaction.channel)
 
     # ------------------------------------------------------------------ /clear
     @tree.command(
