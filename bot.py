@@ -66,6 +66,8 @@ STATIONS: dict[str, tuple[str, str]] = {
 # «Волны» Яндекс.Музыки (rotor): ключ -> (название, station)
 WAVES: dict[str, tuple[str, str]] = {
     "my": ("Моя волна", "user:onyourwave"),
+    "rusrock": ("Русский рок", "genre:rusrock"),
+    "rusrap": ("Русский рэп", "genre:rusrap"),
     "rock": ("Рок", "genre:rock"),
     "pop": ("Поп", "genre:pop"),
     "rap": ("Рэп", "genre:rap"),
@@ -1148,6 +1150,8 @@ class PlayerPanel(discord.ui.View):
         row=4,
         options=[
             discord.SelectOption(label="Моя волна", value="my", emoji="🌊"),
+            discord.SelectOption(label="Русский рок", value="rusrock", emoji="🇷🇺"),
+            discord.SelectOption(label="Русский рэп", value="rusrap", emoji="🇷🇺"),
             discord.SelectOption(label="Рок", value="rock"),
             discord.SelectOption(label="Поп", value="pop"),
             discord.SelectOption(label="Рэп", value="rap"),
