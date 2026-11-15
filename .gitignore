@@ -1,0 +1,16 @@
+# Секреты и локальные данные
+config.json
+panel.json
+.env
+
+# Логи
+*.log
+
+# Окружение
+.venv/
+__pycache__/
+*.pyc
+
+# Резервные копии
+*.bak
+*.bak2

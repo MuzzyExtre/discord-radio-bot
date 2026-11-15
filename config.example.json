@@ -1,0 +1,12 @@
+{
+  "token": "PASTE_TOKEN_HERE",
+  "guild_id": 0,
+  "music_channel_id": 0,
+  "auto_join": true,
+  "volume": 60,
+  "ffmpeg_path": "",
+  "yandex_token": "",
+  "max_tracks_per_link": 0,
+  "panel_repost_after": 0,
+  "panel_channel_id": 0
+}
