@@ -366,6 +366,7 @@ class GuildPlayer:
         self.wave_name = ""
         self._wave_batch: str | None = None
         self._wave_task: asyncio.Task | None = None
+        self._recent: deque[str] = deque(maxlen=200)
         self.volume = max(0.0, min(1.5, float(bot.config.get("volume", 60)) / 100))
 
     def _notify(self) -> None:
@@ -443,6 +444,7 @@ class GuildPlayer:
         self._failures = 0
         self._stopped = False
         self._paused_live = False
+        self._recent.append(seed_id)
         self._start_wave_loop()
         self._restart()
         self._notify()
@@ -479,8 +481,12 @@ class GuildPlayer:
                     return
 
                 self._wave_batch = batch
+                queued = {t.yandex_id for t in self.queue if t.yandex_id}
                 added = 0
                 for item in tracks:
+                    # Ротор отдаёт батчи с перекрытием — не повторяем уже игравшее.
+                    if item["id"] in self._recent or item["id"] in queued:
+                        continue
                     self.queue.append(
                         Track(
                             title=item["title"],
@@ -490,7 +496,11 @@ class GuildPlayer:
                             yandex_id=item["id"],
                         )
                     )
+                    queued.add(item["id"])
                     added += 1
+                if not added:
+                    await asyncio.sleep(1)
+                    continue
                 if added:
                     log.info("Волна «%s»: +%d треков", self.wave_name, added)
                     self._notify()
@@ -615,6 +625,8 @@ class GuildPlayer:
 
         self._current = track
         self.started_at = time.monotonic()
+        if track.yandex_id:
+            self._recent.append(track.yandex_id)
         if track.yandex_id:
             # Ссылка на файл живёт около минуты — берём её прямо перед запуском.
             asyncio.create_task(self._resolve_yandex(track, seq))
