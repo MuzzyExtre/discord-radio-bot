@@ -432,6 +432,21 @@ class GuildPlayer:
         self._restart()
         self._notify()
 
+    def play_track_then_wave(self, track: Track, seed_id: str, name: str) -> None:
+        """Играет трек, а дальше — волна по нему (как в Яндекс.Музыке)."""
+        self.radio = None
+        self.queue.clear()
+        self.queue.append(track)
+        self.wave_name = name
+        self.wave_station = f"track:{seed_id}"
+        self._wave_batch = None
+        self._failures = 0
+        self._stopped = False
+        self._paused_live = False
+        self._start_wave_loop()
+        self._restart()
+        self._notify()
+
     def stop_wave(self) -> bool:
         was = self.wave_station is not None
         self.wave_station = None
@@ -989,12 +1004,18 @@ class UrlModal(discord.ui.Modal, title="Добавить по ссылке"):
             )
             return
 
-        for track in tracks:
-            player.enqueue(track)
-
-        text = f"➕ Добавил треков: {len(tracks)}"
-        if truncated:
-            text += " (сработал лимит)"
+        seed = yandex_mod.track_id(str(self.url))
+        if seed and len(tracks) == 1:
+            player.play_track_then_wave(
+                tracks[0], seed, f"«{tracks[0].title[:40]}»"
+            )
+            text = f"➕ **{tracks[0].title[:120]}**\n🌊 дальше — волна по этому треку"
+        else:
+            for track in tracks:
+                player.enqueue(track)
+            text = f"➕ Добавил треков: {len(tracks)}"
+            if truncated:
+                text += " (сработал лимит)"
         if is_yandex and not bot.yandex.has_token:
             text += "\n⚠️ Без токена играют 30-секундные превью"
         await interaction.edit_original_response(content=text)
@@ -1786,8 +1807,15 @@ class RadioBot(discord.Client):
                 tracks, was_truncated, is_yandex = await resolve_tracks(
                     url, message.author.display_name, limit
                 )
-                for track in tracks:
-                    player.enqueue(track)
+                seed = yandex_mod.track_id(url)
+                if seed and len(tracks) == 1:
+                    # Ссылка на трек: играем его и продолжаем волной по нему.
+                    player.play_track_then_wave(
+                        tracks[0], seed, f"«{tracks[0].title[:40]}»"
+                    )
+                else:
+                    for track in tracks:
+                        player.enqueue(track)
                 added += len(tracks)
                 truncated = truncated or was_truncated
                 if is_yandex and not self.yandex.has_token:
@@ -1980,19 +2008,25 @@ def setup_commands(bot: RadioBot) -> None:
             await interaction.followup.send(f"Не смог зайти в канал: {exc}", ephemeral=True)
             return
 
-        for track in tracks:
-            player.enqueue(track)
-
-        if len(tracks) == 1:
-            text = f"➕ **{tracks[0].title}**"
+        seed = yandex_mod.track_id(url)
+        if seed and len(tracks) == 1:
+            player.play_track_then_wave(
+                tracks[0], seed, f"«{tracks[0].title[:40]}»"
+            )
+            text = f"➕ **{tracks[0].title}**\n🌊 дальше — волна по этому треку"
         else:
-            text = f"➕ Добавил треков: **{len(tracks)}**"
-        if truncated:
-            text += f" (сработал лимит {limit})"
-        if player.radio:
-            text += "\nРадио вернётся после очереди."
-        else:
-            text += f"\nВ очереди: {len(player.queue)}."
+            for track in tracks:
+                player.enqueue(track)
+            if len(tracks) == 1:
+                text = f"➕ **{tracks[0].title}**"
+            else:
+                text = f"➕ Добавил треков: **{len(tracks)}**"
+            if truncated:
+                text += f" (сработал лимит {limit})"
+            if player.radio:
+                text += "\nРадио вернётся после очереди."
+            else:
+                text += f"\nВ очереди: {len(player.queue)}."
         if is_yandex and not bot.yandex.has_token:
             text += (
                 "\n⚠️ Без токена Яндекс.Музыки играют 30-секундные превью: `/yandextoken`."

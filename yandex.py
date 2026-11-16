@@ -89,6 +89,17 @@ def parse_url(url: str) -> tuple[str, tuple[str, ...]]:
     )
 
 
+def track_id(url: str) -> str | None:
+    """Если это ссылка на один трек — вернуть его id (для волны по треку)."""
+    if not is_yandex_url(url):
+        return None
+    try:
+        kind, args = parse_url(url)
+    except YandexError:
+        return None
+    return args[0] if kind == "track" else None
+
+
 def build_direct_link(xml_data: bytes) -> str:
     """Собирает прямую ссылку на mp3 из XML, который отдаёт downloadInfoUrl."""
     try:
